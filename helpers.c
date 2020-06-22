@@ -10,6 +10,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <xf86drm.h>
 
 #include "drv_priv.h"
@@ -91,6 +93,9 @@ static const struct planar_layout *layout_from_format(uint32_t format)
 	case DRM_FORMAT_R8:
 	case DRM_FORMAT_RGB332:
 		return &packed_1bpp_layout;
+
+	case DRM_FORMAT_R16:
+		return &packed_2bpp_layout;
 
 	case DRM_FORMAT_YVU420:
 	case DRM_FORMAT_YVU420_ANDROID:
@@ -174,6 +179,20 @@ size_t drv_num_planes_from_format(uint32_t format)
 	 */
 
 	return layout ? layout->num_planes : 0;
+}
+
+size_t drv_num_planes_from_modifier(struct driver *drv, uint32_t format, uint64_t modifier)
+{
+	size_t planes = drv_num_planes_from_format(format);
+
+	/* Disallow unsupported formats. */
+	if (!planes)
+		return 0;
+
+	if (drv->backend->num_planes_from_modifier && modifier != DRM_FORMAT_MOD_INVALID)
+		return drv->backend->num_planes_from_modifier(drv, format, modifier);
+
+	return planes;
 }
 
 uint32_t drv_height_from_format(uint32_t format, uint32_t height, size_t plane)
@@ -298,18 +317,27 @@ int drv_dumb_bo_create_ex(struct bo *bo, uint32_t width, uint32_t height, uint32
 	aligned_width = width;
 	aligned_height = height;
 	switch (format) {
+	case DRM_FORMAT_R16:
+		/* HAL_PIXEL_FORMAT_Y16 requires that the buffer's width be 16 pixel
+		 * aligned. See hardware/interfaces/graphics/common/1.0/types.hal. */
+		aligned_width = ALIGN(width, 16);
+		break;
 	case DRM_FORMAT_YVU420_ANDROID:
+		/* HAL_PIXEL_FORMAT_YV12 requires that the buffer's height not
+		 * be aligned. Update 'height' so that drv_bo_from_format below
+		 * uses the non-aligned height. */
+		height = bo->meta.height;
+
 		/* Align width to 32 pixels, so chroma strides are 16 bytes as
 		 * Android requires. */
 		aligned_width = ALIGN(width, 32);
-		/* Adjust the height to include room for chroma planes.
-		 *
-		 * HAL_PIXEL_FORMAT_YV12 requires that the buffer's height not
-		 * be aligned. */
-		aligned_height = 3 * DIV_ROUND_UP(bo->meta.height, 2);
+
+		/* Adjust the height to include room for chroma planes. */
+		aligned_height = 3 * DIV_ROUND_UP(height, 2);
 		break;
 	case DRM_FORMAT_YVU420:
 	case DRM_FORMAT_NV12:
+	case DRM_FORMAT_NV21:
 		/* Adjust the height to include room for chroma planes */
 		aligned_height = 3 * DIV_ROUND_UP(height, 2);
 		break;
