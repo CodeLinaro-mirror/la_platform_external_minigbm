@@ -339,6 +339,7 @@ int drv_dumb_bo_create_ex(struct bo *bo, uint32_t width, uint32_t height, uint32
 	case DRM_FORMAT_YVU420:
 	case DRM_FORMAT_NV12:
 	case DRM_FORMAT_NV21:
+	case DRM_FORMAT_P010:
 		/* Adjust the height to include room for chroma planes */
 		aligned_height = 3 * DIV_ROUND_UP(height, 2);
 		break;
@@ -638,4 +639,12 @@ bool drv_has_modifier(const uint64_t *list, uint32_t count, uint64_t modifier)
 			return true;
 
 	return false;
+}
+
+/*
+ * Map internal fourcc codes back to standard fourcc codes.
+ */
+uint32_t drv_get_standard_fourcc(uint32_t fourcc_internal)
+{
+	return (fourcc_internal == DRM_FORMAT_YVU420_ANDROID) ? DRM_FORMAT_YVU420 : fourcc_internal;
 }
