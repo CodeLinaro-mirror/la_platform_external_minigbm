@@ -48,10 +48,9 @@ struct amdgpu_linear_vma_priv {
 };
 
 const static uint32_t render_target_formats[] = {
-	DRM_FORMAT_ABGR8888,	  DRM_FORMAT_ARGB8888,	  DRM_FORMAT_RGB565,
-	DRM_FORMAT_XBGR8888,	  DRM_FORMAT_XRGB8888,	  DRM_FORMAT_ABGR2101010,
-	DRM_FORMAT_ARGB2101010,	  DRM_FORMAT_XBGR2101010, DRM_FORMAT_XRGB2101010,
-	DRM_FORMAT_ABGR16161616F,
+	DRM_FORMAT_ABGR8888,	DRM_FORMAT_ARGB8888,	DRM_FORMAT_RGB565,
+	DRM_FORMAT_XBGR8888,	DRM_FORMAT_XRGB8888,	DRM_FORMAT_ABGR2101010,
+	DRM_FORMAT_ARGB2101010, DRM_FORMAT_XBGR2101010, DRM_FORMAT_XRGB2101010,
 };
 
 const static uint32_t texture_source_formats[] = {
@@ -355,12 +354,10 @@ static int amdgpu_init(struct driver *drv)
 	/* NV12 format for camera, display, decoding and encoding. */
 	drv_modify_combination(drv, DRM_FORMAT_NV12, &metadata,
 			       BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE | BO_USE_SCANOUT |
-				   BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER |
-				   BO_USE_PROTECTED);
+				   BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER);
 
 	drv_modify_combination(drv, DRM_FORMAT_P010, &metadata,
-			       BO_USE_SCANOUT | BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER |
-				   BO_USE_PROTECTED);
+			       BO_USE_SCANOUT | BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER);
 
 	/* Android CTS tests require this. */
 	drv_add_combination(drv, DRM_FORMAT_BGR888, &metadata, BO_USE_SW_MASK);
@@ -474,10 +471,6 @@ static int amdgpu_create_bo_linear(struct bo *bo, uint32_t width, uint32_t heigh
 	if ((use_flags & BO_USE_SCANOUT) || !(use_flags & BO_USE_SW_READ_OFTEN))
 		gem_create.in.domain_flags |= AMDGPU_GEM_CREATE_CPU_GTT_USWC;
 
-	/* For protected data Buffer needs to be allocated from TMZ */
-	if (use_flags & BO_USE_PROTECTED)
-		gem_create.in.domain_flags |= AMDGPU_GEM_CREATE_ENCRYPTED;
-
 	/* Allocate the buffer with the preferred heap. */
 	ret = drmCommandWriteRead(drv_get_fd(bo->drv), DRM_AMDGPU_GEM_CREATE, &gem_create,
 				  sizeof(gem_create));
@@ -496,7 +489,6 @@ static int amdgpu_create_bo(struct bo *bo, uint32_t width, uint32_t height, uint
 			    uint64_t use_flags)
 {
 	struct combination *combo;
-	struct amdgpu_priv *priv = bo->drv->priv;
 
 	combo = drv_get_combination(bo->drv, format, use_flags);
 	if (!combo)
@@ -516,7 +508,7 @@ static int amdgpu_create_bo(struct bo *bo, uint32_t width, uint32_t height, uint
 			needs_alignment = true;
 #endif
 		// See b/122049612
-		if (use_flags & (BO_USE_SCANOUT) && priv->dev_info.family == AMDGPU_FAMILY_CZ)
+		if (use_flags & (BO_USE_SCANOUT))
 			needs_alignment = true;
 
 		if (needs_alignment) {

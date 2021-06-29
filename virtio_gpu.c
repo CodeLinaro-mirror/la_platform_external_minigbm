@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <xf86drm.h>
@@ -18,12 +19,41 @@
 #include "external/virtgpu_drm.h"
 #include "helpers.h"
 #include "util.h"
-#include "virtgpu.h"
 
+#ifndef PAGE_SIZE
+#define PAGE_SIZE 0x1000
+#endif
 #define PIPE_TEXTURE_2D 2
 
 #define MESA_LLVMPIPE_TILE_ORDER 6
 #define MESA_LLVMPIPE_TILE_SIZE (1 << MESA_LLVMPIPE_TILE_ORDER)
+
+struct feature {
+	uint64_t feature;
+	const char *name;
+	uint32_t enabled;
+};
+
+enum feature_id {
+	feat_3d,
+	feat_capset_fix,
+	feat_resource_blob,
+	feat_host_visible,
+	feat_host_cross_device,
+	feat_max,
+};
+
+#define FEATURE(x)                                                                                 \
+	(struct feature)                                                                           \
+	{                                                                                          \
+		x, #x, 0                                                                           \
+	}
+
+static struct feature features[] = {
+	FEATURE(VIRTGPU_PARAM_3D_FEATURES),   FEATURE(VIRTGPU_PARAM_CAPSET_QUERY_FIX),
+	FEATURE(VIRTGPU_PARAM_RESOURCE_BLOB), FEATURE(VIRTGPU_PARAM_HOST_VISIBLE),
+	FEATURE(VIRTGPU_PARAM_CROSS_DEVICE),
+};
 
 static const uint32_t render_target_formats[] = { DRM_FORMAT_ABGR8888, DRM_FORMAT_ARGB8888,
 						  DRM_FORMAT_RGB565, DRM_FORMAT_XBGR8888,
@@ -38,9 +68,7 @@ static const uint32_t texture_source_formats[] = { DRM_FORMAT_NV12, DRM_FORMAT_N
 						   DRM_FORMAT_R8,   DRM_FORMAT_R16,
 						   DRM_FORMAT_RG88, DRM_FORMAT_YVU420_ANDROID };
 
-extern struct virtgpu_param params[];
-
-struct virgl_priv {
+struct virtio_gpu_priv {
 	int caps_is_v2;
 	union virgl_caps caps;
 	int host_gbm_enabled;
@@ -84,8 +112,8 @@ static uint32_t translate_format(uint32_t drm_fourcc)
 	}
 }
 
-static bool virgl_bitmask_supports_format(struct virgl_supported_format_mask *supported,
-					  uint32_t drm_format)
+static bool virtio_gpu_bitmask_supports_format(struct virgl_supported_format_mask *supported,
+					       uint32_t drm_format)
 {
 	uint32_t virgl_format = translate_format(drm_format);
 	if (!virgl_format)
@@ -137,7 +165,7 @@ static bool virgl_bitmask_supports_format(struct virgl_supported_format_mask *su
 // Additional note: the V-plane is not placed to the right of the U-plane due to some
 // observed failures in media framework code which assumes the V-plane is not
 // "row-interlaced" with the U-plane.
-static void virgl_get_emulated_metadata(const struct bo *bo, struct bo_metadata *metadata)
+static void virtio_gpu_get_emulated_metadata(const struct bo *bo, struct bo_metadata *metadata)
 {
 	uint32_t y_plane_height;
 	uint32_t c_plane_height;
@@ -207,9 +235,9 @@ struct virtio_transfers_params {
 	struct rectangle xfer_boxes[DRV_MAX_PLANES];
 };
 
-static void virgl_get_emulated_transfers_params(const struct bo *bo,
-						const struct rectangle *transfer_box,
-						struct virtio_transfers_params *xfer_params)
+static void virtio_gpu_get_emulated_transfers_params(const struct bo *bo,
+						     const struct rectangle *transfer_box,
+						     struct virtio_transfers_params *xfer_params)
 {
 	uint32_t y_plane_height;
 	uint32_t c_plane_height;
@@ -217,7 +245,7 @@ static void virgl_get_emulated_transfers_params(const struct bo *bo,
 
 	if (transfer_box->x == 0 && transfer_box->y == 0 && transfer_box->width == bo->meta.width &&
 	    transfer_box->height == bo->meta.height) {
-		virgl_get_emulated_metadata(bo, &emulated_metadata);
+		virtio_gpu_get_emulated_metadata(bo, &emulated_metadata);
 
 		xfer_params->xfers_needed = 1;
 		xfer_params->xfer_boxes[0].x = 0;
@@ -280,24 +308,24 @@ static void virgl_get_emulated_transfers_params(const struct bo *bo,
 	}
 }
 
-static bool virgl_supports_combination_natively(struct driver *drv, uint32_t drm_format,
-						uint64_t use_flags)
+static bool virtio_gpu_supports_combination_natively(struct driver *drv, uint32_t drm_format,
+						     uint64_t use_flags)
 {
-	struct virgl_priv *priv = (struct virgl_priv *)drv->priv;
+	struct virtio_gpu_priv *priv = (struct virtio_gpu_priv *)drv->priv;
 
 	if (priv->caps.max_version == 0)
 		return true;
 
 	if ((use_flags & BO_USE_RENDERING) &&
-	    !virgl_bitmask_supports_format(&priv->caps.v1.render, drm_format))
+	    !virtio_gpu_bitmask_supports_format(&priv->caps.v1.render, drm_format))
 		return false;
 
 	if ((use_flags & BO_USE_TEXTURE) &&
-	    !virgl_bitmask_supports_format(&priv->caps.v1.sampler, drm_format))
+	    !virtio_gpu_bitmask_supports_format(&priv->caps.v1.sampler, drm_format))
 		return false;
 
 	if ((use_flags & BO_USE_SCANOUT) && priv->caps_is_v2 &&
-	    !virgl_bitmask_supports_format(&priv->caps.v2.scanout, drm_format))
+	    !virtio_gpu_bitmask_supports_format(&priv->caps.v2.scanout, drm_format))
 		return false;
 
 	return true;
@@ -306,10 +334,11 @@ static bool virgl_supports_combination_natively(struct driver *drv, uint32_t drm
 // For virtio backends that do not support formats natively (e.g. multi-planar formats are not
 // supported in virglrenderer when gbm is unavailable on the host machine), whether or not the
 // format and usage combination can be handled as a blob (byte buffer).
-static bool virgl_supports_combination_through_emulation(struct driver *drv, uint32_t drm_format,
-							 uint64_t use_flags)
+static bool virtio_gpu_supports_combination_through_emulation(struct driver *drv,
+							      uint32_t drm_format,
+							      uint64_t use_flags)
 {
-	struct virgl_priv *priv = (struct virgl_priv *)drv->priv;
+	struct virtio_gpu_priv *priv = (struct virtio_gpu_priv *)drv->priv;
 
 	// Only enable emulation on non-gbm virtio backends.
 	if (priv->host_gbm_enabled)
@@ -318,7 +347,7 @@ static bool virgl_supports_combination_through_emulation(struct driver *drv, uin
 	if (use_flags & (BO_USE_RENDERING | BO_USE_SCANOUT))
 		return false;
 
-	if (!virgl_supports_combination_natively(drv, DRM_FORMAT_R8, use_flags))
+	if (!virtio_gpu_supports_combination_natively(drv, DRM_FORMAT_R8, use_flags))
 		return false;
 
 	return drm_format == DRM_FORMAT_NV12 || drm_format == DRM_FORMAT_NV21 ||
@@ -327,20 +356,21 @@ static bool virgl_supports_combination_through_emulation(struct driver *drv, uin
 
 // Adds the given buffer combination to the list of supported buffer combinations if the
 // combination is supported by the virtio backend.
-static void virgl_add_combination(struct driver *drv, uint32_t drm_format,
-				  struct format_metadata *metadata, uint64_t use_flags)
+static void virtio_gpu_add_combination(struct driver *drv, uint32_t drm_format,
+				       struct format_metadata *metadata, uint64_t use_flags)
 {
-	struct virgl_priv *priv = (struct virgl_priv *)drv->priv;
+	struct virtio_gpu_priv *priv = (struct virtio_gpu_priv *)drv->priv;
 
-	if (params[param_3d].value && priv->caps.max_version >= 1) {
+	if (features[feat_3d].enabled && priv->caps.max_version >= 1) {
 		if ((use_flags & BO_USE_SCANOUT) && priv->caps_is_v2 &&
-		    !virgl_supports_combination_natively(drv, drm_format, use_flags)) {
+		    !virtio_gpu_supports_combination_natively(drv, drm_format, use_flags)) {
 			drv_log("Scanout format: %d\n", drm_format);
 			use_flags &= ~BO_USE_SCANOUT;
 		}
 
-		if (!virgl_supports_combination_natively(drv, drm_format, use_flags) &&
-		    !virgl_supports_combination_through_emulation(drv, drm_format, use_flags)) {
+		if (!virtio_gpu_supports_combination_natively(drv, drm_format, use_flags) &&
+		    !virtio_gpu_supports_combination_through_emulation(drv, drm_format,
+								       use_flags)) {
 			drv_log("Skipping unsupported combination format:%d\n", drm_format);
 			return;
 		}
@@ -351,14 +381,14 @@ static void virgl_add_combination(struct driver *drv, uint32_t drm_format,
 
 // Adds each given buffer combination to the list of supported buffer combinations if the
 // combination supported by the virtio backend.
-static void virgl_add_combinations(struct driver *drv, const uint32_t *drm_formats,
-				   uint32_t num_formats, struct format_metadata *metadata,
-				   uint64_t use_flags)
+static void virtio_gpu_add_combinations(struct driver *drv, const uint32_t *drm_formats,
+					uint32_t num_formats, struct format_metadata *metadata,
+					uint64_t use_flags)
 {
 	uint32_t i;
 
 	for (i = 0; i < num_formats; i++)
-		virgl_add_combination(drv, drm_formats[i], metadata, use_flags);
+		virtio_gpu_add_combination(drv, drm_formats[i], metadata, use_flags);
 }
 
 static int virtio_dumb_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
@@ -434,8 +464,8 @@ static uint32_t compute_virgl_bind_flags(uint64_t use_flags, uint32_t format)
 	return bind;
 }
 
-static int virgl_3d_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
-			      uint64_t use_flags)
+static int virtio_virgl_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
+				  uint64_t use_flags)
 {
 	int ret;
 	size_t i;
@@ -443,13 +473,14 @@ static int virgl_3d_bo_create(struct bo *bo, uint32_t width, uint32_t height, ui
 	struct drm_virtgpu_resource_create res_create = { 0 };
 	struct bo_metadata emulated_metadata;
 
-	if (virgl_supports_combination_natively(bo->drv, format, use_flags)) {
+	if (virtio_gpu_supports_combination_natively(bo->drv, format, use_flags)) {
 		stride = drv_stride_from_format(format, width, 0);
 		drv_bo_from_format(bo, stride, height, format);
 	} else {
-		assert(virgl_supports_combination_through_emulation(bo->drv, format, use_flags));
+		assert(
+		    virtio_gpu_supports_combination_through_emulation(bo->drv, format, use_flags));
 
-		virgl_get_emulated_metadata(bo, &emulated_metadata);
+		virtio_gpu_get_emulated_metadata(bo, &emulated_metadata);
 
 		format = emulated_metadata.format;
 		width = emulated_metadata.width;
@@ -495,7 +526,7 @@ static int virgl_3d_bo_create(struct bo *bo, uint32_t width, uint32_t height, ui
 	return 0;
 }
 
-static void *virgl_3d_bo_map(struct bo *bo, struct vma *vma, size_t plane, uint32_t map_flags)
+static void *virtio_virgl_bo_map(struct bo *bo, struct vma *vma, size_t plane, uint32_t map_flags)
 {
 	int ret;
 	struct drm_virtgpu_map gem_map = { 0 };
@@ -512,14 +543,14 @@ static void *virgl_3d_bo_map(struct bo *bo, struct vma *vma, size_t plane, uint3
 		    gem_map.offset);
 }
 
-static int virgl_get_caps(struct driver *drv, union virgl_caps *caps, int *caps_is_v2)
+static int virtio_gpu_get_caps(struct driver *drv, union virgl_caps *caps, int *caps_is_v2)
 {
 	int ret;
 	struct drm_virtgpu_get_caps cap_args = { 0 };
 
 	*caps_is_v2 = 0;
 	cap_args.addr = (unsigned long long)caps;
-	if (params[param_capset_fix].value) {
+	if (features[feat_capset_fix].enabled) {
 		*caps_is_v2 = 1;
 		cap_args.cap_set_id = 2;
 		cap_args.size = sizeof(union virgl_caps);
@@ -545,73 +576,79 @@ static int virgl_get_caps(struct driver *drv, union virgl_caps *caps, int *caps_
 	return ret;
 }
 
-static void virgl_init_params_and_caps(struct driver *drv)
+static void virtio_gpu_init_features_and_caps(struct driver *drv)
 {
-	struct virgl_priv *priv = (struct virgl_priv *)drv->priv;
-	if (params[param_3d].value) {
-		virgl_get_caps(drv, &priv->caps, &priv->caps_is_v2);
+	struct virtio_gpu_priv *priv = (struct virtio_gpu_priv *)drv->priv;
 
-		// We use two criteria to determine whether host minigbm is used on the host for
-		// swapchain allocations.
-		//
-		// (1) Host minigbm is only available via virglrenderer, and only virglrenderer
-		//     advertises capabilities.
-		// (2) Only host minigbm doesn't emulate YUV formats.  Checking this is a bit of a
-		//     proxy, but it works.
-		priv->host_gbm_enabled =
-		    priv->caps.max_version > 0 &&
-		    virgl_supports_combination_natively(drv, DRM_FORMAT_NV12, BO_USE_TEXTURE);
+	for (uint32_t i = 0; i < ARRAY_SIZE(features); i++) {
+		struct drm_virtgpu_getparam params = { 0 };
+
+		params.param = features[i].feature;
+		params.value = (uint64_t)(uintptr_t)&features[i].enabled;
+		int ret = drmIoctl(drv->fd, DRM_IOCTL_VIRTGPU_GETPARAM, &params);
+		if (ret)
+			drv_log("DRM_IOCTL_VIRTGPU_GET_PARAM failed with %s\n", strerror(errno));
 	}
+
+	if (features[feat_3d].enabled)
+		virtio_gpu_get_caps(drv, &priv->caps, &priv->caps_is_v2);
+
+	priv->host_gbm_enabled =
+	    // 2D mode does not create resources on the host so it does not enable host gbm.
+	    features[feat_3d].enabled &&
+	    // Gfxstream does not enable host gbm. Virglrenderer sets caps while Gfxstream does not
+	    // so filter out if we are running with Gfxstream.
+	    priv->caps.max_version > 0 &&
+	    // Virglrenderer only supports multi-planar formats through host gbm.
+	    virtio_gpu_supports_combination_natively(drv, DRM_FORMAT_NV12, BO_USE_TEXTURE);
 }
 
-static int virgl_init(struct driver *drv)
+static int virtio_gpu_init(struct driver *drv)
 {
-	struct virgl_priv *priv;
+	struct virtio_gpu_priv *priv;
 
 	priv = calloc(1, sizeof(*priv));
 	drv->priv = priv;
 
-	virgl_init_params_and_caps(drv);
+	virtio_gpu_init_features_and_caps(drv);
 
-	if (params[param_3d].value) {
+	if (features[feat_3d].enabled) {
 		/* This doesn't mean host can scanout everything, it just means host
 		 * hypervisor can show it. */
-		virgl_add_combinations(drv, render_target_formats,
-				       ARRAY_SIZE(render_target_formats), &LINEAR_METADATA,
-				       BO_USE_RENDER_MASK | BO_USE_SCANOUT);
-		virgl_add_combinations(drv, texture_source_formats,
-				       ARRAY_SIZE(texture_source_formats), &LINEAR_METADATA,
-				       BO_USE_TEXTURE_MASK);
+		virtio_gpu_add_combinations(drv, render_target_formats,
+					    ARRAY_SIZE(render_target_formats), &LINEAR_METADATA,
+					    BO_USE_RENDER_MASK | BO_USE_SCANOUT);
+		virtio_gpu_add_combinations(drv, texture_source_formats,
+					    ARRAY_SIZE(texture_source_formats), &LINEAR_METADATA,
+					    BO_USE_TEXTURE_MASK);
 	} else {
 		/* Virtio primary plane only allows this format. */
-		virgl_add_combination(drv, DRM_FORMAT_XRGB8888, &LINEAR_METADATA,
-				      BO_USE_RENDER_MASK | BO_USE_SCANOUT);
+		virtio_gpu_add_combination(drv, DRM_FORMAT_XRGB8888, &LINEAR_METADATA,
+					   BO_USE_RENDER_MASK | BO_USE_SCANOUT);
 		/* Virtio cursor plane only allows this format and Chrome cannot live without
 		 * ARGB888 renderable format. */
-		virgl_add_combination(drv, DRM_FORMAT_ARGB8888, &LINEAR_METADATA,
-				      BO_USE_RENDER_MASK | BO_USE_CURSOR);
+		virtio_gpu_add_combination(drv, DRM_FORMAT_ARGB8888, &LINEAR_METADATA,
+					   BO_USE_RENDER_MASK | BO_USE_CURSOR);
 		/* Android needs more, but they cannot be bound as scanouts anymore after
 		 * "drm/virtio: fix DRM_FORMAT_* handling" */
-		virgl_add_combinations(drv, render_target_formats,
-				       ARRAY_SIZE(render_target_formats), &LINEAR_METADATA,
-				       BO_USE_RENDER_MASK);
-		virgl_add_combinations(drv, dumb_texture_source_formats,
-				       ARRAY_SIZE(dumb_texture_source_formats), &LINEAR_METADATA,
-				       BO_USE_TEXTURE_MASK);
-		virgl_add_combination(drv, DRM_FORMAT_NV12, &LINEAR_METADATA,
-				      BO_USE_SW_MASK | BO_USE_LINEAR);
-		virgl_add_combination(drv, DRM_FORMAT_NV21, &LINEAR_METADATA,
-				      BO_USE_SW_MASK | BO_USE_LINEAR);
+		virtio_gpu_add_combinations(drv, render_target_formats,
+					    ARRAY_SIZE(render_target_formats), &LINEAR_METADATA,
+					    BO_USE_RENDER_MASK);
+		virtio_gpu_add_combinations(drv, dumb_texture_source_formats,
+					    ARRAY_SIZE(dumb_texture_source_formats),
+					    &LINEAR_METADATA, BO_USE_TEXTURE_MASK);
+		virtio_gpu_add_combination(drv, DRM_FORMAT_NV12, &LINEAR_METADATA,
+					   BO_USE_SW_MASK | BO_USE_LINEAR);
+		virtio_gpu_add_combination(drv, DRM_FORMAT_NV21, &LINEAR_METADATA,
+					   BO_USE_SW_MASK | BO_USE_LINEAR);
 	}
 
 	/* Android CTS tests require this. */
-	virgl_add_combination(drv, DRM_FORMAT_RGB888, &LINEAR_METADATA, BO_USE_SW_MASK);
-	virgl_add_combination(drv, DRM_FORMAT_BGR888, &LINEAR_METADATA, BO_USE_SW_MASK);
-	virgl_add_combination(drv, DRM_FORMAT_ABGR16161616F, &LINEAR_METADATA,
+	virtio_gpu_add_combination(drv, DRM_FORMAT_RGB888, &LINEAR_METADATA, BO_USE_SW_MASK);
+	virtio_gpu_add_combination(drv, DRM_FORMAT_BGR888, &LINEAR_METADATA, BO_USE_SW_MASK);
+	virtio_gpu_add_combination(drv, DRM_FORMAT_ABGR16161616F, &LINEAR_METADATA,
 				   BO_USE_SW_MASK | BO_USE_TEXTURE_MASK);
-	virgl_add_combination(drv, DRM_FORMAT_ABGR2101010, &LINEAR_METADATA,
-			      BO_USE_SW_MASK | BO_USE_TEXTURE_MASK);
-	virgl_add_combination(drv, DRM_FORMAT_P010, &LINEAR_METADATA,
+	virtio_gpu_add_combination(drv, DRM_FORMAT_P010, &LINEAR_METADATA,
 				   BO_USE_SW_MASK | BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE);
 
 	drv_modify_combination(drv, DRM_FORMAT_NV12, &LINEAR_METADATA,
@@ -645,20 +682,20 @@ static int virgl_init(struct driver *drv)
 	return drv_modify_linear_combinations(drv);
 }
 
-static void virgl_close(struct driver *drv)
+static void virtio_gpu_close(struct driver *drv)
 {
 	free(drv->priv);
 	drv->priv = NULL;
 }
 
-static int virgl_bo_create_blob(struct driver *drv, struct bo *bo)
+static int virtio_gpu_bo_create_blob(struct driver *drv, struct bo *bo)
 {
 	int ret;
 	uint32_t stride;
 	uint32_t cur_blob_id;
 	uint32_t cmd[VIRGL_PIPE_RES_CREATE_SIZE + 1] = { 0 };
 	struct drm_virtgpu_resource_create_blob drm_rc_blob = { 0 };
-	struct virgl_priv *priv = (struct virgl_priv *)drv->priv;
+	struct virtio_gpu_priv *priv = (struct virtio_gpu_priv *)drv->priv;
 
 	uint32_t blob_flags = VIRTGPU_BLOB_FLAG_USE_SHAREABLE;
 	if (bo->meta.use_flags & BO_USE_SW_MASK)
@@ -703,7 +740,7 @@ static int virgl_bo_create_blob(struct driver *drv, struct bo *bo)
 
 static bool should_use_blob(struct driver *drv, uint32_t format, uint64_t use_flags)
 {
-	struct virgl_priv *priv = (struct virgl_priv *)drv->priv;
+	struct virtio_gpu_priv *priv = (struct virtio_gpu_priv *)drv->priv;
 
 	// TODO(gurchetansingh): remove once all minigbm users are blob-safe
 #ifndef VIRTIO_GPU_NEXT
@@ -733,46 +770,46 @@ static bool should_use_blob(struct driver *drv, uint32_t format, uint64_t use_fl
 	}
 }
 
-static int virgl_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
-			   uint64_t use_flags)
+static int virtio_gpu_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t format,
+				uint64_t use_flags)
 {
-	if (params[param_resource_blob].value && params[param_host_visible].value &&
+	if (features[feat_resource_blob].enabled && features[feat_host_visible].enabled &&
 	    should_use_blob(bo->drv, format, use_flags))
-		return virgl_bo_create_blob(bo->drv, bo);
+		return virtio_gpu_bo_create_blob(bo->drv, bo);
 
-	if (params[param_3d].value)
-		return virgl_3d_bo_create(bo, width, height, format, use_flags);
+	if (features[feat_3d].enabled)
+		return virtio_virgl_bo_create(bo, width, height, format, use_flags);
 	else
 		return virtio_dumb_bo_create(bo, width, height, format, use_flags);
 }
 
-static int virgl_bo_destroy(struct bo *bo)
+static int virtio_gpu_bo_destroy(struct bo *bo)
 {
-	if (params[param_3d].value)
+	if (features[feat_3d].enabled)
 		return drv_gem_bo_destroy(bo);
 	else
 		return drv_dumb_bo_destroy(bo);
 }
 
-static void *virgl_bo_map(struct bo *bo, struct vma *vma, size_t plane, uint32_t map_flags)
+static void *virtio_gpu_bo_map(struct bo *bo, struct vma *vma, size_t plane, uint32_t map_flags)
 {
-	if (params[param_3d].value)
-		return virgl_3d_bo_map(bo, vma, plane, map_flags);
+	if (features[feat_3d].enabled)
+		return virtio_virgl_bo_map(bo, vma, plane, map_flags);
 	else
 		return drv_dumb_bo_map(bo, vma, plane, map_flags);
 }
 
-static int virgl_bo_invalidate(struct bo *bo, struct mapping *mapping)
+static int virtio_gpu_bo_invalidate(struct bo *bo, struct mapping *mapping)
 {
 	int ret;
 	size_t i;
 	struct drm_virtgpu_3d_transfer_from_host xfer = { 0 };
 	struct drm_virtgpu_3d_wait waitcmd = { 0 };
 	struct virtio_transfers_params xfer_params;
-	struct virgl_priv *priv = (struct virgl_priv *)bo->drv->priv;
+	struct virtio_gpu_priv *priv = (struct virtio_gpu_priv *)bo->drv->priv;
 	uint64_t host_write_flags;
 
-	if (!params[param_3d].value)
+	if (!features[feat_3d].enabled)
 		return 0;
 
 	// Invalidate is only necessary if the host writes to the buffer. The encoder and
@@ -787,7 +824,8 @@ static int virgl_bo_invalidate(struct bo *bo, struct mapping *mapping)
 	if ((bo->meta.use_flags & host_write_flags) == 0)
 		return 0;
 
-	if (params[param_resource_blob].value && (bo->meta.tiling & VIRTGPU_BLOB_FLAG_USE_MAPPABLE))
+	if (features[feat_resource_blob].enabled &&
+	    (bo->meta.tiling & VIRTGPU_BLOB_FLAG_USE_MAPPABLE))
 		return 0;
 
 	xfer.bo_handle = mapping->vma->handle;
@@ -806,7 +844,7 @@ static int virgl_bo_invalidate(struct bo *bo, struct mapping *mapping)
 
 	if ((bo->meta.use_flags & BO_USE_RENDERING) == 0) {
 		// Unfortunately, the kernel doesn't actually pass the guest layer_stride
-		// and guest stride to the host (compare virgl.h and virtgpu_drm.h).
+		// and guest stride to the host (compare virtio_gpu.h and virtgpu_drm.h).
 		// For gbm based resources, we can work around this by using the level field
 		// to pass the stride to virglrenderer's gbm transfer code. However, we need
 		// to avoid doing this for resources which don't rely on that transfer code,
@@ -816,14 +854,15 @@ static int virgl_bo_invalidate(struct bo *bo, struct mapping *mapping)
 			xfer.level = bo->meta.strides[0];
 	}
 
-	if (virgl_supports_combination_natively(bo->drv, bo->meta.format, bo->meta.use_flags)) {
+	if (virtio_gpu_supports_combination_natively(bo->drv, bo->meta.format,
+						     bo->meta.use_flags)) {
 		xfer_params.xfers_needed = 1;
 		xfer_params.xfer_boxes[0] = mapping->rect;
 	} else {
-		assert(virgl_supports_combination_through_emulation(bo->drv, bo->meta.format,
-								    bo->meta.use_flags));
+		assert(virtio_gpu_supports_combination_through_emulation(bo->drv, bo->meta.format,
+									 bo->meta.use_flags));
 
-		virgl_get_emulated_transfers_params(bo, &mapping->rect, &xfer_params);
+		virtio_gpu_get_emulated_transfers_params(bo, &mapping->rect, &xfer_params);
 	}
 
 	for (i = 0; i < xfer_params.xfers_needed; i++) {
@@ -854,22 +893,23 @@ static int virgl_bo_invalidate(struct bo *bo, struct mapping *mapping)
 	return 0;
 }
 
-static int virgl_bo_flush(struct bo *bo, struct mapping *mapping)
+static int virtio_gpu_bo_flush(struct bo *bo, struct mapping *mapping)
 {
 	int ret;
 	size_t i;
 	struct drm_virtgpu_3d_transfer_to_host xfer = { 0 };
 	struct drm_virtgpu_3d_wait waitcmd = { 0 };
 	struct virtio_transfers_params xfer_params;
-	struct virgl_priv *priv = (struct virgl_priv *)bo->drv->priv;
+	struct virtio_gpu_priv *priv = (struct virtio_gpu_priv *)bo->drv->priv;
 
-	if (!params[param_3d].value)
+	if (!features[feat_3d].enabled)
 		return 0;
 
 	if (!(mapping->vma->map_flags & BO_MAP_WRITE))
 		return 0;
 
-	if (params[param_resource_blob].value && (bo->meta.tiling & VIRTGPU_BLOB_FLAG_USE_MAPPABLE))
+	if (features[feat_resource_blob].enabled &&
+	    (bo->meta.tiling & VIRTGPU_BLOB_FLAG_USE_MAPPABLE))
 		return 0;
 
 	xfer.bo_handle = mapping->vma->handle;
@@ -887,19 +927,20 @@ static int virgl_bo_flush(struct bo *bo, struct mapping *mapping)
 	}
 
 	// Unfortunately, the kernel doesn't actually pass the guest layer_stride and
-	// guest stride to the host (compare virgl.h and virtgpu_drm.h). We can use
+	// guest stride to the host (compare virtio_gpu.h and virtgpu_drm.h). We can use
 	// the level to work around this.
 	if (priv->host_gbm_enabled)
 		xfer.level = bo->meta.strides[0];
 
-	if (virgl_supports_combination_natively(bo->drv, bo->meta.format, bo->meta.use_flags)) {
+	if (virtio_gpu_supports_combination_natively(bo->drv, bo->meta.format,
+						     bo->meta.use_flags)) {
 		xfer_params.xfers_needed = 1;
 		xfer_params.xfer_boxes[0] = mapping->rect;
 	} else {
-		assert(virgl_supports_combination_through_emulation(bo->drv, bo->meta.format,
-								    bo->meta.use_flags));
+		assert(virtio_gpu_supports_combination_through_emulation(bo->drv, bo->meta.format,
+									 bo->meta.use_flags));
 
-		virgl_get_emulated_transfers_params(bo, &mapping->rect, &xfer_params);
+		virtio_gpu_get_emulated_transfers_params(bo, &mapping->rect, &xfer_params);
 	}
 
 	for (i = 0; i < xfer_params.xfers_needed; i++) {
@@ -934,7 +975,7 @@ static int virgl_bo_flush(struct bo *bo, struct mapping *mapping)
 	return 0;
 }
 
-static uint32_t virgl_resolve_format(struct driver *drv, uint32_t format, uint64_t use_flags)
+static uint32_t virtio_gpu_resolve_format(struct driver *drv, uint32_t format, uint64_t use_flags)
 {
 	switch (format) {
 	case DRM_FORMAT_FLEX_IMPLEMENTATION_DEFINED:
@@ -948,7 +989,7 @@ static uint32_t virgl_resolve_format(struct driver *drv, uint32_t format, uint64
 		 * All of our host drivers prefer NV12 as their flexible media format.
 		 * If that changes, this will need to be modified.
 		 */
-		if (params[param_3d].value)
+		if (features[feat_3d].enabled)
 			return DRM_FORMAT_NV12;
 		else
 			return DRM_FORMAT_YVU420_ANDROID;
@@ -956,13 +997,14 @@ static uint32_t virgl_resolve_format(struct driver *drv, uint32_t format, uint64
 		return format;
 	}
 }
-static int virgl_resource_info(struct bo *bo, uint32_t strides[DRV_MAX_PLANES],
-			       uint32_t offsets[DRV_MAX_PLANES], uint64_t *format_modifier)
+
+static int virtio_gpu_resource_info(struct bo *bo, uint32_t strides[DRV_MAX_PLANES],
+				    uint32_t offsets[DRV_MAX_PLANES])
 {
 	int ret;
 	struct drm_virtgpu_resource_info_cros res_info = { 0 };
 
-	if (!params[param_3d].value)
+	if (!features[feat_3d].enabled)
 		return 0;
 
 	res_info.bo_handle = bo->handles[0].u32;
@@ -983,20 +1025,21 @@ static int virgl_resource_info(struct bo *bo, uint32_t strides[DRV_MAX_PLANES],
 			offsets[plane] = res_info.offsets[plane];
 		}
 	}
-	*format_modifier = res_info.format_modifier;
 
 	return 0;
 }
 
-const struct backend virtgpu_virgl = { .name = "virtgpu_virgl",
-				       .init = virgl_init,
-				       .close = virgl_close,
-				       .bo_create = virgl_bo_create,
-				       .bo_destroy = virgl_bo_destroy,
-				       .bo_import = drv_prime_bo_import,
-				       .bo_map = virgl_bo_map,
-				       .bo_unmap = drv_bo_munmap,
-				       .bo_invalidate = virgl_bo_invalidate,
-				       .bo_flush = virgl_bo_flush,
-				       .resolve_format = virgl_resolve_format,
-				       .resource_info = virgl_resource_info };
+const struct backend backend_virtio_gpu = {
+	.name = "virtio_gpu",
+	.init = virtio_gpu_init,
+	.close = virtio_gpu_close,
+	.bo_create = virtio_gpu_bo_create,
+	.bo_destroy = virtio_gpu_bo_destroy,
+	.bo_import = drv_prime_bo_import,
+	.bo_map = virtio_gpu_bo_map,
+	.bo_unmap = drv_bo_munmap,
+	.bo_invalidate = virtio_gpu_bo_invalidate,
+	.bo_flush = virtio_gpu_bo_flush,
+	.resolve_format = virtio_gpu_resolve_format,
+	.resource_info = virtio_gpu_resource_info,
+};

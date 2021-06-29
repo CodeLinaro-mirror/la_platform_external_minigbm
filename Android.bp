@@ -46,10 +46,9 @@ cc_defaults {
         "mediatek.c",
         "msm.c",
         "rockchip.c",
+        "tegra.c",
         "vc4.c",
-        "virtgpu.c",
-        "virtgpu_cross_domain.c",
-        "virtgpu_virgl.c",
+        "virtio_gpu.c",
     ],
 
     cflags: [
@@ -147,18 +146,13 @@ cc_library {
     ],
 }
 
-cc_defaults {
-    name: "libminigbm_cros_gralloc_defaults",
+cc_library_static {
+    name: "libminigbm_cros_gralloc",
     defaults: ["minigbm_cros_gralloc_defaults"],
     shared_libs: ["liblog"],
     static_libs: ["libdrm"],
 
     export_include_dirs: ["."],
-}
-
-cc_library_static {
-    name: "libminigbm_cros_gralloc",
-    defaults: ["libminigbm_cros_gralloc_defaults"],
 }
 
 cc_library_shared {
@@ -188,19 +182,4 @@ cc_library_shared {
     defaults: ["minigbm_cros_gralloc_defaults"],
     cflags: ["-DDRV_MESON"],
     srcs: ["cros_gralloc/gralloc0/gralloc0.cc"],
-}
-
-cc_library_shared {
-    name: "gralloc.minigbm_msm",
-    defaults: ["minigbm_cros_gralloc_defaults"],
-    cflags: ["-DDRV_MSM"],
-    srcs: [
-        "cros_gralloc/gralloc0/gralloc0.cc",
-    ],
-}
-
-cc_library_static {
-    name: "libminigbm_cros_gralloc_msm",
-    defaults: ["libminigbm_cros_gralloc_defaults"],
-    cflags: ["-DDRV_MSM"],
 }
