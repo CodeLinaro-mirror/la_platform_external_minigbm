@@ -394,6 +394,10 @@ static int amdgpu_init(struct driver *drv)
 	use_flags &= ~BO_USE_RENDERSCRIPT;
 	use_flags &= ~BO_USE_SW_WRITE_OFTEN;
 	use_flags &= ~BO_USE_SW_READ_OFTEN;
+#if __ANDROID__
+	use_flags &= ~BO_USE_SW_WRITE_RARELY;
+	use_flags &= ~BO_USE_SW_READ_RARELY;
+#endif
 	use_flags &= ~BO_USE_LINEAR;
 
 	metadata.tiling = TILE_TYPE_DRI;
@@ -439,9 +443,9 @@ static int amdgpu_create_bo_linear(struct bo *bo, uint32_t width, uint32_t heigh
 	 * For multiplane formats, align the stride to 512 to ensure that subsample strides are 256
 	 * aligned. This uses more memory than necessary since the first plane only needs to be
 	 * 256 aligned, but it's acceptable for a short-term fix. It's probably safe for other gpu
-	 * families, but let's restrict it to Raven for now (b/171013552).
+	 * families, but let's restrict it to Raven and Stoney for now (b/171013552, b/190484589).
 	 * */
-	if (priv->dev_info.family == AMDGPU_FAMILY_RV && num_planes > 1)
+	if (priv->dev_info.family <= AMDGPU_FAMILY_RV && num_planes > 1)
 		stride = ALIGN(stride, 512);
 	else
 		stride = ALIGN(stride, 256);
@@ -503,23 +507,8 @@ static int amdgpu_create_bo(struct bo *bo, uint32_t width, uint32_t height, uint
 		return -EINVAL;
 
 	if (combo->metadata.tiling == TILE_TYPE_DRI) {
-		bool needs_alignment = false;
-#ifdef __ANDROID__
-		/*
-		 * Currently, the gralloc API doesn't differentiate between allocation time and map
-		 * time strides. A workaround for amdgpu DRI buffers is to always to align to 256 at
-		 * allocation time.
-		 *
-		 * See b/115946221,b/117942643
-		 */
-		if (use_flags & (BO_USE_SW_MASK))
-			needs_alignment = true;
-#endif
 		// See b/122049612
-		if (use_flags & (BO_USE_SCANOUT) && priv->dev_info.family == AMDGPU_FAMILY_CZ)
-			needs_alignment = true;
-
-		if (needs_alignment) {
+		if (use_flags & (BO_USE_SCANOUT) && priv->dev_info.family == AMDGPU_FAMILY_CZ) {
 			uint32_t bytes_per_pixel = drv_bytes_per_pixel_from_format(format, 0);
 			width = ALIGN(width, 256 / bytes_per_pixel);
 		}
