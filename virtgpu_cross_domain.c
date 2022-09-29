@@ -89,15 +89,18 @@ static void add_combinations(struct driver *drv)
 
 	drv_modify_combination(drv, DRM_FORMAT_YVU420, &metadata, BO_USE_HW_VIDEO_ENCODER);
 	drv_modify_combination(drv, DRM_FORMAT_NV12, &metadata,
+			       BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE |
 			       BO_USE_HW_VIDEO_DECODER | BO_USE_SCANOUT | BO_USE_HW_VIDEO_ENCODER);
 
 	/*
 	 * R8 format is used for Android's HAL_PIXEL_FORMAT_BLOB and is used for JPEG snapshots
-	 * from camera and input/output from hardware decoder/encoder.
+	 * from camera, input/output from hardware decoder/encoder, and
+	 * AHBs used as SSBOs/UBOs.
 	 */
 	drv_modify_combination(drv, DRM_FORMAT_R8, &metadata,
-			       BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE | BO_USE_HW_VIDEO_DECODER |
-				   BO_USE_HW_VIDEO_ENCODER);
+			       BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE |
+			       BO_USE_HW_VIDEO_DECODER | BO_USE_HW_VIDEO_ENCODER |
+			       BO_USE_GPU_DATA_BUFFER);
 
 	drv_modify_linear_combinations(drv);
 }
@@ -239,14 +242,6 @@ static int cross_domain_init(struct driver *drv)
 	if (!params[param_host_visible].value && !params[param_create_guest_handle].value)
 		return -ENOTSUP;
 
-	/*
-	 * crosvm never reports the fake capset.  This is just an extra check to make sure we
-	 * don't use the cross-domain context by accident.  Developers may remove this for
-	 * testing purposes.
-	 */
-	if ((params[param_supported_capset_ids].value & (1 << CAPSET_CROSS_FAKE)) == 0)
-		return -ENOTSUP;
-
 	priv = calloc(1, sizeof(*priv));
 	if (!priv)
 		return -ENOMEM;
@@ -366,7 +361,7 @@ static int cross_domain_bo_create(struct bo *bo, uint32_t width, uint32_t height
 	if (use_flags & BO_USE_SW_MASK)
 		blob_flags |= VIRTGPU_BLOB_FLAG_USE_MAPPABLE;
 
-	if (params[param_cross_device].value && (use_flags & BO_USE_NON_GPU_HW))
+	if (params[param_cross_device].value)
 		blob_flags |= VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE;
 
 	/// It may be possible to have host3d blobs and handles from guest memory at the same time.
