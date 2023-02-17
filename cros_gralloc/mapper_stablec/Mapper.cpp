@@ -22,6 +22,7 @@
 
 using namespace ::aidl::android::hardware::graphics::common;
 using namespace ::android::hardware::graphics::mapper;
+using ::aidl::android::hardware::graphics::allocator::BufferDescriptorInfo;
 using ::android::base::unique_fd;
 
 #define REQUIRE_DRIVER()                                           \
@@ -40,10 +41,9 @@ using ::android::base::unique_fd;
     REQUIRE_DRIVER()                                    \
     VALIDATE_BUFFER_HANDLE(bufferHandle)
 
-static_assert(
-        CROS_GRALLOC4_METADATA_MAX_NAME_SIZE >=
-                ::aidl::android::hardware::graphics::allocator::BufferDescriptorInfo{}.name.size(),
-        "Metadata name storage too small to fit a BufferDescriptorInfo::name");
+static_assert(CROS_GRALLOC4_METADATA_MAX_NAME_SIZE >=
+                      decltype(std::declval<BufferDescriptorInfo>().name){}.size(),
+              "Metadata name storage too small to fit a BufferDescriptorInfo::name");
 
 constexpr const char* STANDARD_METADATA_NAME =
         "android.hardware.graphics.common.StandardMetadataType";
@@ -216,8 +216,8 @@ AIMapper_Error CrosGrallocMapperV5::lock(buffer_handle_t _Nonnull bufferHandle, 
     } else {
         if (region.left < 0 || region.top < 0 || region.right <= region.left ||
             region.bottom <= region.top) {
-            ALOGE("Failed to lock. Invalid accessRegion: [%d, %d, %d, %d]", region.left,
-                  region.top, region.right, region.bottom);
+            ALOGE("Failed to lock. Invalid accessRegion: [%d, %d, %d, %d]", region.left, region.top,
+                  region.right, region.bottom);
             return AIMAPPER_ERROR_BAD_VALUE;
         }
 
@@ -235,8 +235,8 @@ AIMapper_Error CrosGrallocMapperV5::lock(buffer_handle_t _Nonnull bufferHandle, 
         }
 
         rect = {static_cast<uint32_t>(region.left), static_cast<uint32_t>(region.top),
-                             static_cast<uint32_t>(region.right - region.left),
-                             static_cast<uint32_t>(region.bottom - region.top)};
+                static_cast<uint32_t>(region.right - region.left),
+                static_cast<uint32_t>(region.bottom - region.top)};
     }
 
     uint8_t* addr[DRV_MAX_PLANES];
@@ -347,6 +347,9 @@ int32_t CrosGrallocMapperV5::getStandardMetadata(const cros_gralloc_buffer* cros
     }
     if constexpr (metadataType == StandardMetadataType::WIDTH) {
         return provide(crosBuffer->get_width());
+    }
+    if constexpr (metadataType == StandardMetadataType::STRIDE) {
+        return provide(crosBuffer->get_pixel_stride());
     }
     if constexpr (metadataType == StandardMetadataType::HEIGHT) {
         return provide(crosBuffer->get_height());
@@ -529,7 +532,7 @@ constexpr AIMapper_MetadataTypeDescription describeStandard(StandardMetadataType
 AIMapper_Error CrosGrallocMapperV5::listSupportedMetadataTypes(
         const AIMapper_MetadataTypeDescription* _Nullable* _Nonnull outDescriptionList,
         size_t* _Nonnull outNumberOfDescriptions) {
-    static constexpr std::array<AIMapper_MetadataTypeDescription, 21> sSupportedMetadaTypes{
+    static constexpr std::array<AIMapper_MetadataTypeDescription, 22> sSupportedMetadaTypes{
             describeStandard(StandardMetadataType::BUFFER_ID, true, false),
             describeStandard(StandardMetadataType::NAME, true, false),
             describeStandard(StandardMetadataType::WIDTH, true, false),
@@ -551,6 +554,7 @@ AIMapper_Error CrosGrallocMapperV5::listSupportedMetadataTypes(
             describeStandard(StandardMetadataType::BLEND_MODE, true, true),
             describeStandard(StandardMetadataType::SMPTE2086, true, true),
             describeStandard(StandardMetadataType::CTA861_3, true, true),
+            describeStandard(StandardMetadataType::STRIDE, true, false),
     };
     *outDescriptionList = sSupportedMetadaTypes.data();
     *outNumberOfDescriptions = sSupportedMetadaTypes.size();
@@ -732,6 +736,8 @@ AIMapper_Error CrosGrallocMapperV5::getMutableCrosMetadata(cros_gralloc_buffer* 
     *outMetadata = reinterpret_cast<CrosGralloc4Metadata*>(addr);
     return AIMAPPER_ERROR_NONE;
 }
+
+extern "C" uint32_t ANDROID_HAL_MAPPER_VERSION = AIMAPPER_VERSION_5;
 
 extern "C" AIMapper_Error AIMapper_loadIMapper(AIMapper* _Nullable* _Nonnull outImplementation) {
     static vendor::mapper::IMapperProvider<CrosGrallocMapperV5> provider;
