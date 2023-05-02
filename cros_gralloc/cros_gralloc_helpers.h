@@ -28,6 +28,10 @@
 
 #define CROS_GRALLOC_BUFFER_METADATA_MAX_NAME_SIZE 1024
 
+// Reserve the GRALLOC_USAGE_PRIVATE_1 bit from hardware/gralloc.h for buffers
+// used for Guest VRAM allocations.
+#define BUFFER_USAGE_GUEST_VRAM      (1U << 29)
+
 struct cros_gralloc_buffer_descriptor {
 	uint32_t width;
 	uint32_t height;

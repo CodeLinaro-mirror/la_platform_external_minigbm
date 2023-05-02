@@ -41,7 +41,8 @@ extern "C" {
 #define BO_USE_FRONT_RENDERING		(1ull << 16)
 #define BO_USE_RENDERSCRIPT		(1ull << 17)
 #define BO_USE_GPU_DATA_BUFFER		(1ull << 18)
-#define BO_USE_SENSOR_DIRECT_DATA	(1ull << 19)
+#define BO_USE_GUEST_VRAM		(1ull << 19)
+#define BO_USE_SENSOR_DIRECT_DATA	(1ull << 20)
 
 #define BO_USE_ARC_SCREEN_CAP_PROBED	(1ull << 63)
 

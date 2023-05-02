@@ -304,7 +304,7 @@ enum gbm_bo_flags {
    /**
     * The buffer will be used as a sensor direct report output.
     */
-   GBM_BO_USE_SENSOR_DIRECT_DATA = (1 << 19),
+   GBM_BO_USE_SENSOR_DIRECT_DATA = (1 << 20),
 };
 
 int
