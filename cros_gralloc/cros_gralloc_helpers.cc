@@ -142,6 +142,7 @@ uint64_t cros_gralloc_convert_usage(uint64_t usage)
 	handle_usage(&usage, BUFFER_USAGE_FRONT_RENDERING, &use_flags, BO_USE_FRONT_RENDERING);
 	handle_usage(&usage, BUFFER_USAGE_FRONT_RENDERING_PRIVATE, &use_flags,
 		     BO_USE_FRONT_RENDERING);
+	handle_usage(&usage, BUFFER_USAGE_GUEST_VRAM, &use_flags, BO_USE_GUEST_VRAM);
 
 	if (usage) {
 		ALOGE("Unhandled gralloc usage: %llx", (unsigned long long)usage);

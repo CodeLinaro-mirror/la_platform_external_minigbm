@@ -401,6 +401,9 @@ static void virgl_add_combination(struct driver *drv, uint32_t drm_format,
 			drv_logi("Skipping unsupported combination format:%d\n", drm_format);
 			return;
 		}
+
+		// Guest VRAM via HOST3D blobs can be used with any format combination
+		use_flags |= BO_USE_GUEST_VRAM;
 	}
 
 	drv_add_combination(drv, drm_format, metadata, use_flags);
@@ -479,6 +482,7 @@ static uint32_t compute_virgl_bind_flags(uint64_t use_flags)
 		    VIRGL_BIND_MINIGBM_HW_VIDEO_DECODER);
 	handle_flag(&use_flags, BO_USE_HW_VIDEO_ENCODER, &bind,
 		    VIRGL_BIND_MINIGBM_HW_VIDEO_ENCODER);
+	handle_flag(&use_flags, BO_USE_GUEST_VRAM, &bind, 0);
 
 	if (use_flags)
 		drv_loge("Unhandled bo use flag: %llx\n", (unsigned long long)use_flags);
@@ -784,7 +788,7 @@ static bool virgl_blob_metadata_eq(struct lru_entry *entry, void *data)
 
 static int virgl_blob_do_create(struct driver *drv, uint32_t width, uint32_t height,
 				uint32_t use_flags, uint32_t virgl_format, uint32_t total_size,
-				uint32_t *bo_handle)
+				uint32_t *bo_handle, bool guest_vram)
 {
 	int ret;
 	uint32_t cur_blob_id;
@@ -793,6 +797,11 @@ static int virgl_blob_do_create(struct driver *drv, uint32_t width, uint32_t hei
 	struct virgl_priv *priv = (struct virgl_priv *)drv->priv;
 	uint32_t virgl_bind_flags = compute_virgl_bind_flags(use_flags);
 	uint32_t blob_flags = blob_flags_from_use_flags(use_flags);
+
+	// For Guest VRAM allocation setting mappable flag to ensure host side is able
+	// to import guest allocated blob
+	if (guest_vram)
+		blob_flags |= VIRTGPU_BLOB_FLAG_USE_MAPPABLE;
 
 	cur_blob_id = atomic_fetch_add(&priv->next_blob_id, 1);
 
@@ -832,7 +841,7 @@ static int virgl_blob_do_create(struct driver *drv, uint32_t width, uint32_t hei
 //
 // Note that we can't reuse these test buffers as actual allocations because our guess for
 // total_size is insufficient if width!=stride or padding!=0.
-static int virgl_blob_get_host_format(struct driver *drv, struct bo_metadata *meta)
+static int virgl_blob_get_host_format(struct driver *drv, struct bo_metadata *meta, bool guest_vram)
 {
 	struct virgl_priv *priv = (struct virgl_priv *)drv->priv;
 	int num_planes = drv_num_planes_from_format(meta->format);
@@ -862,7 +871,7 @@ static int virgl_blob_get_host_format(struct driver *drv, struct bo_metadata *me
 			uint32_t handle;
 			int ret =
 			    virgl_blob_do_create(drv, meta->width, meta->height, meta->use_flags,
-						 virgl_format, total_size, &handle);
+						 virgl_format, total_size, &handle, guest_vram);
 			if (ret) {
 				pthread_mutex_unlock(&priv->host_blob_format_lock);
 				return ret;
@@ -918,15 +927,16 @@ static int virgl_blob_get_host_format(struct driver *drv, struct bo_metadata *me
 	return 0;
 }
 
-static int virgl_bo_create_blob(struct driver *drv, struct bo *bo)
+static int virgl_bo_create_blob(struct driver *drv, struct bo *bo, uint64_t use_flags)
 {
 	int ret;
 	uint32_t virgl_format = translate_format(bo->meta.format);
 	uint32_t bo_handle;
+	bool guest_vram = use_flags & BO_USE_GUEST_VRAM;
 
-	virgl_blob_get_host_format(drv, &bo->meta);
+	virgl_blob_get_host_format(drv, &bo->meta, guest_vram);
 	ret = virgl_blob_do_create(drv, bo->meta.width, bo->meta.height, bo->meta.use_flags,
-				   virgl_format, bo->meta.total_size, &bo_handle);
+				   virgl_format, bo->meta.total_size, &bo_handle, guest_vram);
 	if (ret)
 		return ret;
 
@@ -943,6 +953,9 @@ static bool should_use_blob(struct driver *drv, uint32_t format, uint64_t use_fl
 #ifndef VIRTIO_GPU_NEXT
 	return false;
 #endif
+
+	if (use_flags & BO_USE_GUEST_VRAM)
+		return true;
 
 	// Only use blob when host gbm is available
 	if (!priv->host_gbm_enabled)
@@ -980,7 +993,7 @@ static int virgl_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint3
 {
 	if (params[param_resource_blob].value && params[param_host_visible].value &&
 	    should_use_blob(bo->drv, format, use_flags))
-		return virgl_bo_create_blob(bo->drv, bo);
+		return virgl_bo_create_blob(bo->drv, bo, use_flags);
 
 	if (params[param_3d].value)
 		return virgl_3d_bo_create(bo, width, height, format, use_flags);
