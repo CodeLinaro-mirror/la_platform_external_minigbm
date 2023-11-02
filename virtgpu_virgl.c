@@ -1029,6 +1029,9 @@ static void virgl_3d_resolve_format_and_use_flags(struct driver *drv, uint32_t f
 		/* Camera subsystem requires NV12. */
 		if (use_flags & (BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE)) {
 			*out_format = DRM_FORMAT_NV12;
+		} else if (use_flags & BO_USE_SCANOUT) {
+			/* WORKAROUND: COQOS virtio-gpu wayland backend has hard-coded XRGB8888 */
+			*out_format = DRM_FORMAT_XRGB8888;
 		} else {
 			/* HACK: See b/28671744 and b/264408280 */
 			*out_format = DRM_FORMAT_XBGR8888;
@@ -1041,6 +1044,11 @@ static void virgl_3d_resolve_format_and_use_flags(struct driver *drv, uint32_t f
 		 * If that changes, this will need to be modified. */
 		*out_format = DRM_FORMAT_NV12;
 		break;
+	/* WORKAROUND: COQOS virtio-gpu wayland backend has hard-coded XRGB8888 */
+	case DRM_FORMAT_ABGR8888:
+		*out_format = (use_flags & BO_USE_SCANOUT) ? DRM_FORMAT_ARGB8888 : format;
+	case DRM_FORMAT_XBGR8888:
+		*out_format = (use_flags & BO_USE_SCANOUT) ? DRM_FORMAT_XRGB8888 : format;
 	default:
 		break;
 	}
