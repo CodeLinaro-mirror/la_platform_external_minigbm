@@ -191,8 +191,10 @@ bool cros_gralloc_driver::get_resolved_format_and_use_flags(
 					 &resolved_format, &resolved_use_flags);
 
 	combo = drv_get_combination(drv_.get(), resolved_format, resolved_use_flags);
-	if (!combo && (descriptor->droid_usage & GRALLOC_USAGE_HW_VIDEO_ENCODER) &&
-	    descriptor->droid_format != HAL_PIXEL_FORMAT_YCbCr_420_888) {
+
+	if (!combo && (descriptor->droid_usage & GRALLOC_USAGE_HW_VIDEO_ENCODER) ) {
+	//if (!combo && (descriptor->droid_usage & GRALLOC_USAGE_HW_VIDEO_ENCODER) &&
+	  //  descriptor->droid_format != HAL_PIXEL_FORMAT_YCbCr_420_888) {
 		// Unmask BO_USE_HW_VIDEO_ENCODER for other formats. They are mostly
 		// intermediate formats not passed directly to the encoder (e.g.
 		// camera). YV12 is passed to the encoder component, but it is converted
