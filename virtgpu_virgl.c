@@ -653,6 +653,11 @@ static void virgl_init_params_and_caps(struct driver *drv)
 		priv->host_gbm_enabled =
 		    priv->caps.max_version > 0 &&
 		    virgl_supports_combination_natively(drv, DRM_FORMAT_NV12, BO_USE_TEXTURE);
+
+		// blob_id == 0 does not refer to an existing VkDeviceMemory and implies
+		// a shmmem allocation with `shmem_blob_mem` type. Therefore for `bo_blob_mem`
+		// skipping blob_id == 0 and starting counter from 1.
+		atomic_store(&priv->next_blob_id, 1);
 	}
 }
 
