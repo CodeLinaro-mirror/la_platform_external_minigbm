@@ -298,7 +298,7 @@ int32_t CrosGrallocMapperV5::getStandardMetadata(buffer_handle_t _Nonnull buffer
 
     int32_t retValue = -AIMAPPER_ERROR_UNSUPPORTED;
     mDriver->with_buffer(crosHandle, [&](cros_gralloc_buffer* crosBuffer) {
-        auto provider = [this, crosBuffer]<StandardMetadataType T>(auto&& provide) -> int32_t {
+        auto provider = [&]<StandardMetadataType T>(auto&& provide) -> int32_t {
             return getStandardMetadata(crosBuffer, provide, StandardMetadata<T>{});
         };
         retValue = provideStandardMetadata(static_cast<StandardMetadataType>(standardType), outData,
