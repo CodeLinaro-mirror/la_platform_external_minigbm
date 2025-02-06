@@ -962,8 +962,6 @@ static int virgl_bo_create_blob(struct driver *drv, struct bo *bo, uint64_t use_
 
 static bool should_use_blob(struct driver *drv, uint32_t format, uint64_t use_flags)
 {
-	struct virgl_priv *priv = (struct virgl_priv *)drv->priv;
-
 	// TODO(gurchetansingh): remove once all minigbm users are blob-safe
 #ifndef VIRTIO_GPU_NEXT
 	return false;
@@ -971,10 +969,6 @@ static bool should_use_blob(struct driver *drv, uint32_t format, uint64_t use_fl
 
 	if (use_flags & BO_USE_GUEST_VRAM)
 		return true;
-
-	// Only use blob when host gbm is available
-	if (!priv->host_gbm_enabled)
-		return false;
 
 	// Use regular resources if only the GPU needs efficient access. Blob resource is a better
 	// fit for BO_USE_GPU_DATA_BUFFER which is mapped to VIRGL_BIND_LINEAR.
