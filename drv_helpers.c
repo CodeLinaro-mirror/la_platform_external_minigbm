@@ -244,12 +244,53 @@ uint32_t drv_stride_from_format(uint32_t format, uint32_t width, size_t plane)
 	uint32_t plane_width = DIV_ROUND_UP(width, layout->horizontal_subsampling[plane]);
 	uint32_t stride = plane_width * layout->bytes_per_pixel[plane];
 
+	switch (format) {
 	/*
 	 * The stride of Android YV12 buffers is required to be aligned to 16 bytes
 	 * (see <system/graphics.h>).
 	 */
-	if (format == DRM_FORMAT_YVU420_ANDROID)
+	case DRM_FORMAT_YVU420_ANDROID:
 		stride = (plane == 0) ? ALIGN(stride, 32) : ALIGN(stride, 16);
+		break;
+	/*
+	 * MSM hardcode (sa8155 platform)
+	 * 32 bpp formats has stride equal to 256 bytes
+	 */
+	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_ARGB8888:
+	case DRM_FORMAT_XBGR8888:
+	case DRM_FORMAT_XRGB8888:
+		stride = ALIGN(stride, 256);
+		break;
+	/*
+	 * MSM hardcode (sa8155 platform)
+	 * 24 bpp formats has stride equal to 768 bytes
+	 */
+	case DRM_FORMAT_BGR888:
+	case DRM_FORMAT_RGB888:
+		stride = ALIGN(stride, 768);
+		break;
+
+	case DRM_FORMAT_RGB565:
+		stride = ALIGN(stride, 128);
+		break;
+
+	case DRM_FORMAT_ABGR2101010:
+	case DRM_FORMAT_ARGB2101010:
+		stride = ALIGN(stride, 256);
+		break;
+	/*
+	 * The stride of NV12 buffers is required to be aligned to 4 bytes.
+	 * While gstreamer encoder device need at exactly 4 byte alignment,
+	 * GPU allocation apparently ends up with 128 bytes stride. This create
+	 * conflict, which ideally need to be fixed by aligning stride expectations
+	 * on virtio-gpu and virtio-video device. For now leave it 4 in order to
+	 * resolve video tests.
+	 */
+	case DRM_FORMAT_NV12:
+		stride = ALIGN(stride, 4);
+		break;
+	}
 
 	return stride;
 }

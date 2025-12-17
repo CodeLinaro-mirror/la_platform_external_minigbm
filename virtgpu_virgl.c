@@ -1112,6 +1112,9 @@ static int virgl_bo_invalidate(struct bo *bo, struct mapping *mapping)
 			xfer.level = bo->meta.strides[0];
 	}
 
+	/* Workaround: propagate primary plane stride to the host. Strides of other planes are ignored. */
+	xfer.stride = bo->meta.strides[0];
+
 	if (virgl_supports_combination_natively(bo->drv, bo->meta.format, bo->meta.use_flags)) {
 		xfer_params.xfers_needed = 1;
 		xfer_params.xfer_boxes[0] = mapping->rect;
@@ -1187,6 +1190,9 @@ static int virgl_bo_flush(struct bo *bo, struct mapping *mapping)
 	// the level to work around this.
 	if (priv->host_gbm_enabled)
 		xfer.level = bo->meta.strides[0];
+
+	/* Workaround: propagate primary plane stride to the host. Strides of other planes are ignored. */
+	xfer.stride = bo->meta.strides[0];
 
 	if (virgl_supports_combination_natively(bo->drv, bo->meta.format, bo->meta.use_flags)) {
 		xfer_params.xfers_needed = 1;
