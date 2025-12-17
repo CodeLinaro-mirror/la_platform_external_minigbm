@@ -683,10 +683,15 @@ static int virgl_init(struct driver *drv)
 				       BO_USE_GPU_HW);
 		/* NV12 with scanout must flow through virgl_add_combination, so that the native
 		 * support is checked and scanout use_flag can be conditionally stripped. */
+		/* [OPSy] Currently, the NV12 format is not natively supported by virtio-gpu and 
+		that is why it cannot be prepared for direct display output. However, it is required 
+		by the Android CTS decoder test. We need to skip BO_USE_SCANOUT option to provide 
+		support for the NV12 output format in emulation mode. 
+		If NV12 format is added to virtio-gpu this change can be reverted. */
 		virgl_add_combination(drv, DRM_FORMAT_NV12, &LINEAR_METADATA,
 				      BO_USE_TEXTURE_MASK | BO_USE_CAMERA_READ |
 					  BO_USE_CAMERA_WRITE | BO_USE_HW_VIDEO_DECODER |
-					  BO_USE_HW_VIDEO_ENCODER | BO_USE_SCANOUT);
+					  BO_USE_HW_VIDEO_ENCODER /* | BO_USE_SCANOUT */);
 	} else {
 		/* Virtio primary plane only allows this format. */
 		virgl_add_combination(drv, DRM_FORMAT_XRGB8888, &LINEAR_METADATA,
