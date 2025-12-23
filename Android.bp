@@ -231,7 +231,7 @@ rust_bindgen {
 cc_library_shared {
     name: "libminigbm_gralloc",
     defaults: ["minigbm_cros_gralloc_library_defaults"],
-    cflags: generic_cflags,
+    cflags: generic_cflags + ["-DVIRTIO_GPU_NEXT"],
 }
 
 cc_library_shared {
