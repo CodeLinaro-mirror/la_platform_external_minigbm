@@ -831,6 +831,18 @@ static int virgl_blob_do_create(struct driver *drv, uint32_t width, uint32_t hei
 	return 0;
 }
 
+/*
+ * Add Out-Of-Band area at the end of Guest VRAM blob used in Vulkan.
+ * This is workaround to mitigate the issue when vkGetImageMemoryRequirements2
+ * reports size bigger then size calculated by drv_bo_from_format() and then
+ * blob can't be binded to created vkImage. This is considered as some OOB area
+ * for metadata, so can be safely mitigated by increasing buffer allocation.
+ * Selected OOB size 524352 corresponds to "oversizing" in case of window with
+ * resolution 4096x4096 which is assuming as maximum.
+ *
+ */
+#define GUEST_VRAM_VK_OOB 524352
+
 // Queries the host layout for the requested buffer metadata.
 //
 // Of particular interest is total_size. This value is passed to the kernel when creating
@@ -921,6 +933,9 @@ static int virgl_blob_get_host_format(struct driver *drv, struct bo_metadata *me
 	}
 	pthread_mutex_unlock(&priv->host_blob_format_lock);
 
+	if (guest_vram)
+		meta->total_size += ALIGN(GUEST_VRAM_VK_OOB, PAGE_SIZE);
+	
 	meta->total_size = ALIGN(meta->total_size, PAGE_SIZE);
 	meta->tiling = blob_flags_from_use_flags(meta->use_flags);
 
