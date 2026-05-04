@@ -330,6 +330,25 @@ static int gralloc0_perform(struct gralloc_module_t const *module, int op, ...)
 		if (ret)
 			break;
 
+		/*
+		 * Some virtio setups report an invalid byte stride for single-plane
+		 * RGB scanout buffers through resource_info(). Fall back to the ANB
+		 * pixel stride from handle metadata to keep userspace/import layout
+		 * consistent.
+		 */
+		if (info->num_fds == 1 && hnd->pixel_stride > 0) {
+			const uint32_t bpp = drv_bytes_per_pixel_from_format(hnd->format, 0);
+			const uint64_t expected_stride64 = static_cast<uint64_t>(hnd->pixel_stride) * bpp;
+			if (bpp != 0 && expected_stride64 <= 0xffffffffull &&
+			    strides[0] < expected_stride64) {
+				ALOGW("Fixing invalid gralloc stride: %u -> %llu"
+				      " (fmt=%4.4s, pixel_stride=%u)",
+				      strides[0], static_cast<unsigned long long>(expected_stride64),
+				      reinterpret_cast<const char *>(&hnd->format), hnd->pixel_stride);
+				strides[0] = static_cast<uint32_t>(expected_stride64);
+			}
+		}
+
 		info->modifier = format_modifier ? format_modifier : hnd->format_modifier;
 		for (uint32_t i = 0; i < DRV_MAX_PLANES; i++) {
 			if (!strides[i])
