@@ -53,6 +53,13 @@ static const uint32_t texture_source_formats[] = {
 	DRM_FORMAT_ABGR2101010
 };
 
+static const uint32_t image_storage_formats[] = {
+	DRM_FORMAT_ABGR2101010,	  DRM_FORMAT_ABGR8888,
+	DRM_FORMAT_ARGB8888,	  DRM_FORMAT_RGB565,
+	DRM_FORMAT_XBGR8888,	  DRM_FORMAT_XRGB8888,
+	DRM_FORMAT_R8,
+};
+
 static const uint32_t depth_stencil_formats[] = {
 	DRM_FORMAT_DEPTH16, DRM_FORMAT_DEPTH24, DRM_FORMAT_DEPTH24_STENCIL8,
 	DRM_FORMAT_DEPTH32, DRM_FORMAT_DEPTH32_STENCIL8
@@ -382,6 +389,22 @@ static bool virgl_supports_combination_through_emulation(struct driver *drv, uin
 
 	return drm_format == DRM_FORMAT_NV12 || drm_format == DRM_FORMAT_NV21 ||
 	       drm_format == DRM_FORMAT_YVU420 || drm_format == DRM_FORMAT_YVU420_ANDROID;
+}
+
+static bool virgl_supports_storage_images(struct driver *drv)
+{
+	struct virgl_priv *priv = (struct virgl_priv *)drv->priv;
+
+	/* Storage image limits are available only in virgl capset v2. */
+	if (priv->caps.max_version == 0 || !priv->caps_is_v2)
+		return false;
+
+	/* These caps are image-unit counts. If both are zero, virgl exposes no shader
+	* image load/store path, so storage images are effectively unsupported.
+	* Non-zero means storage-image capability is advertised globally (not per-format).
+	*/
+	return priv->caps.v2.max_shader_image_frag_compute > 0 ||
+			priv->caps.v2.max_shader_image_other_stages > 0;
 }
 
 // Adds the given buffer combination to the list of supported buffer combinations if the
@@ -736,6 +759,20 @@ static int virgl_init(struct driver *drv)
 			       BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE | BO_USE_HW_VIDEO_DECODER |
 				   BO_USE_HW_VIDEO_ENCODER | BO_USE_SENSOR_DIRECT_DATA |
 				   BO_USE_GPU_DATA_BUFFER);
+
+	/* Android AIDL gralloc allows use of AHB-backed external memory for storage images. */
+#if defined(ANDROID_API_LEVEL) && ANDROID_API_LEVEL >= 31
+    if (params[param_3d].value && virgl_supports_storage_images(drv)) {
+        for (uint32_t i = 0; i < ARRAY_SIZE(image_storage_formats); i++) {
+            uint32_t format = image_storage_formats[i];
+            if (!virgl_supports_combination_natively(drv, format,
+                                                    BO_USE_RENDERING | BO_USE_TEXTURE))
+                continue;
+
+            drv_modify_combination(drv, format, &LINEAR_METADATA, BO_USE_GPU_DATA_BUFFER);
+        }
+    }
+#endif
 
 	if (!priv->host_gbm_enabled) {
 		drv_modify_combination(drv, DRM_FORMAT_ABGR8888, &LINEAR_METADATA,
