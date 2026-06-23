@@ -954,9 +954,18 @@ static int virgl_blob_get_host_format(struct driver *drv, struct bo_metadata *me
 			entry->meta = *meta;
 
 			for (int i = 0; i < num_planes; i++) {
-				entry->meta.strides[i] = info.strides[i];
+				/*
+				 * The kernel virtio-gpu resource_info ioctl never populates
+				 * strides[] for blob resources (it only fills blob_mem/size).
+				 * Fall back to drv_stride_from_format when the ioctl returns
+				 * zero, so hnd->strides[] is valid for gralloc BUFFER_INFO
+				 * queries and vn_android_gralloc_get_buffer_properties().
+				 */
+				entry->meta.strides[i] = info.strides[i] ?
+				    info.strides[i] :
+				    drv_stride_from_format(meta->format, meta->width, i);
 				entry->meta.sizes[i] =
-				    info.strides[i] *
+				    entry->meta.strides[i] *
 				    drv_height_from_format(meta->format, meta->height, i);
 				entry->meta.offsets[i] = info.offsets[i];
 			}
