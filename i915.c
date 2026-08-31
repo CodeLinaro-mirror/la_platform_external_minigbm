@@ -912,7 +912,7 @@ static int i915_bo_import(struct bo *bo, struct drv_import_fd_data *data)
 
 		ret = drmIoctl(bo->drv->fd, DRM_IOCTL_I915_GEM_GET_TILING, &gem_get_tiling);
 		if (ret) {
-			drv_gem_bo_destroy(bo);
+			drv_gem_close_if_unreferenced(bo->drv, bo->handle.u32);
 			drv_loge("DRM_IOCTL_I915_GEM_GET_TILING failed.\n");
 			return ret;
 		}

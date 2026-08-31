@@ -459,6 +459,29 @@ int drv_gem_bo_destroy(struct bo *bo)
 	return drv_gem_close(bo->drv, bo->handle.u32);
 }
 
+/*
+ * Close a GEM handle only if no live bo in this driver still references it.
+ * This is primarily used when cleaning up after a failed import. Because
+ * DRM_IOCTL_PRIME_FD_TO_HANDLE returns the same handle for any fd referencing
+ * the same underlying object on a given DRM file, a handle may already be held
+ * by another bo and tracked in drv->buffer_table. Only handles with no other
+ * live references are closed; the rest are left for their owner to release.
+ */
+void drv_gem_close_if_unreferenced(struct driver *drv, uint32_t gem_handle)
+{
+	void *value;
+
+	if (!gem_handle)
+		return;
+
+	pthread_mutex_lock(&drv->buffer_table_lock);
+	// Only close the handle if it is not in the buffer table
+	if (drmHashLookup(drv->buffer_table, gem_handle, &value)) {
+		drv_gem_close(drv, gem_handle);
+	}
+	pthread_mutex_unlock(&drv->buffer_table_lock);
+}
+
 int drv_prime_bo_import(struct bo *bo, struct drv_import_fd_data *data)
 {
 	int ret;
@@ -472,7 +495,7 @@ int drv_prime_bo_import(struct bo *bo, struct drv_import_fd_data *data)
 		ret = drmIoctl(bo->drv->fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime_handle);
 
 		if (plane > 0 && !ret && bo->handle.u32 != prime_handle.handle) {
-			drv_gem_close(bo->drv, prime_handle.handle);
+			drv_gem_close_if_unreferenced(bo->drv, prime_handle.handle);
 			ret = -1;
 			errno = EINVAL;
 		}
@@ -480,7 +503,7 @@ int drv_prime_bo_import(struct bo *bo, struct drv_import_fd_data *data)
 		if (ret) {
 			drv_loge("DRM_IOCTL_PRIME_FD_TO_HANDLE failed (fd=%u)\n", prime_handle.fd);
 			if (plane > 0)
-				drv_gem_close(bo->drv, bo->handle.u32);
+				drv_gem_close_if_unreferenced(bo->drv, bo->handle.u32);
 			return -errno;
 		}
 

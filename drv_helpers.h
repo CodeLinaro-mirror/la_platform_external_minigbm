@@ -35,6 +35,7 @@ int drv_dumb_bo_create_ex(struct bo *bo, uint32_t width, uint32_t height, uint32
 int drv_dumb_bo_destroy(struct bo *bo);
 int drv_gem_close(struct driver *drv, uint32_t gem_handle);
 int drv_gem_bo_destroy(struct bo *bo);
+void drv_gem_close_if_unreferenced(struct driver *drv, uint32_t gem_handle);
 int drv_prime_bo_import(struct bo *bo, struct drv_import_fd_data *data);
 int drv_prime_bo_export(struct bo *bo, size_t plane);
 void *drv_dumb_bo_map(struct bo *bo, struct vma *vma, uint32_t map_flags);
