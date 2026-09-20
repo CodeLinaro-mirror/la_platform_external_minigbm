@@ -185,10 +185,13 @@ static bool virgl_bitmask_supports_format(struct virgl_supported_format_mask *su
 // Additional note: the V-plane is not placed to the right of the U-plane due to some
 // observed failures in media framework code which assumes the V-plane is not
 // "row-interlaced" with the U-plane.
-static void virgl_get_emulated_metadata(const struct bo *bo, struct bo_metadata *metadata)
+static int virgl_get_emulated_metadata(const struct bo *bo, struct bo_metadata *metadata)
 {
-	uint32_t y_plane_height;
-	uint32_t c_plane_height;
+	uint64_t y_plane_height;
+	uint64_t c_plane_height;
+	uint64_t width;
+	uint64_t height;
+	uint64_t total_size;
 	uint32_t original_width = bo->meta.width;
 	uint32_t original_height = bo->meta.height;
 
@@ -200,22 +203,31 @@ static void virgl_get_emulated_metadata(const struct bo *bo, struct bo_metadata 
 		metadata->num_planes = 2;
 
 		y_plane_height = original_height;
-		c_plane_height = DIV_ROUND_UP(original_height, 2);
+		c_plane_height = DIV_ROUND_UP(y_plane_height, 2);
 
-		metadata->width = original_width;
-		metadata->height = y_plane_height + c_plane_height;
+		width = original_width;
+		height = y_plane_height + c_plane_height;
+		total_size = width * height;
+		if (height > UINT32_MAX || total_size > UINT32_MAX) {
+			drv_loge("emulated layout for %ux%u buffer exceeds 32 bits\n",
+				 original_width, original_height);
+			return -EINVAL;
+		}
+
+		metadata->width = width;
+		metadata->height = height;
 
 		// Y-plane (full resolution)
 		metadata->strides[0] = metadata->width;
 		metadata->offsets[0] = 0;
-		metadata->sizes[0] = metadata->width * y_plane_height;
+		metadata->sizes[0] = width * y_plane_height;
 
 		// CbCr-plane  (half resolution, interleaved, placed below Y-plane)
 		metadata->strides[1] = metadata->width;
 		metadata->offsets[1] = metadata->offsets[0] + metadata->sizes[0];
-		metadata->sizes[1] = metadata->width * c_plane_height;
+		metadata->sizes[1] = width * c_plane_height;
 
-		metadata->total_size = metadata->width * metadata->height;
+		metadata->total_size = total_size;
 		break;
 	case DRM_FORMAT_P010:
 		// Bi-planar, 16-bit components
@@ -267,31 +279,42 @@ static void virgl_get_emulated_metadata(const struct bo *bo, struct bo_metadata 
 		metadata->num_planes = 3;
 
 		y_plane_height = original_height;
-		c_plane_height = DIV_ROUND_UP(original_height, 2);
+		c_plane_height = DIV_ROUND_UP(y_plane_height, 2);
 
-		metadata->width = ALIGN(original_width, 32);
-		metadata->height = y_plane_height + (2 * c_plane_height);
+		width = ALIGN((uint64_t)original_width, 32);
+		height = y_plane_height + (2 * c_plane_height);
+		total_size = width * height;
+		if (width > UINT32_MAX || height > UINT32_MAX || total_size > UINT32_MAX) {
+			drv_loge("emulated layout for %ux%u buffer exceeds 32 bits\n",
+				 original_width, original_height);
+			return -EINVAL;
+		}
+
+		metadata->width = width;
+		metadata->height = height;
 
 		// Y-plane (full resolution)
 		metadata->strides[0] = metadata->width;
 		metadata->offsets[0] = 0;
-		metadata->sizes[0] = metadata->width * original_height;
+		metadata->sizes[0] = width * y_plane_height;
 
 		// Cb-plane (half resolution, placed below Y-plane)
 		metadata->strides[1] = metadata->width;
 		metadata->offsets[1] = metadata->offsets[0] + metadata->sizes[0];
-		metadata->sizes[1] = metadata->width * c_plane_height;
+		metadata->sizes[1] = width * c_plane_height;
 
 		// Cr-plane (half resolution, placed below Cb-plane)
 		metadata->strides[2] = metadata->width;
 		metadata->offsets[2] = metadata->offsets[1] + metadata->sizes[1];
-		metadata->sizes[2] = metadata->width * c_plane_height;
+		metadata->sizes[2] = width * c_plane_height;
 
-		metadata->total_size = metadata->width * metadata->height;
+		metadata->total_size = total_size;
 		break;
 	default:
 		break;
 	}
+
+	return 0;
 }
 
 struct virtio_transfers_params {
@@ -308,9 +331,8 @@ static void virgl_get_emulated_transfers_params(const struct bo *bo,
 	struct bo_metadata emulated_metadata = { 0 };
 
 	if (transfer_box->x == 0 && transfer_box->y == 0 && transfer_box->width == bo->meta.width &&
-	    transfer_box->height == bo->meta.height) {
-		virgl_get_emulated_metadata(bo, &emulated_metadata);
-
+	    transfer_box->height == bo->meta.height &&
+	    virgl_get_emulated_metadata(bo, &emulated_metadata) == 0) {
 		xfer_params->xfers_needed = 1;
 		xfer_params->xfer_boxes[0].x = 0;
 		xfer_params->xfer_boxes[0].y = 0;
@@ -608,7 +630,9 @@ static int virgl_3d_bo_create(struct bo *bo, uint32_t width, uint32_t height, ui
 	} else {
 		assert(virgl_supports_combination_through_emulation(bo->drv, format, use_flags));
 
-		virgl_get_emulated_metadata(bo, &emulated_metadata);
+		ret = virgl_get_emulated_metadata(bo, &emulated_metadata);
+		if (ret)
+			return ret;
 
 		format = emulated_metadata.format;
 		width = emulated_metadata.width;
@@ -640,6 +664,13 @@ static int virgl_3d_bo_create(struct bo *bo, uint32_t width, uint32_t height, ui
 	res_create.array_size = 1;
 	res_create.last_level = 0;
 	res_create.nr_samples = 0;
+
+	/* drm_virtgpu_resource_create::size is 32 bits wide. */
+	if (bo->meta.total_size > UINT32_MAX - (PAGE_SIZE - 1)) {
+		drv_loge("%ux%u buffer total size %zu is too large\n", width, height,
+			 bo->meta.total_size);
+		return -EINVAL;
+	}
 
 	res_create.size = ALIGN(bo->meta.total_size, PAGE_SIZE); // PAGE_SIZE = 0x1000
 	ret = drmIoctl(bo->drv->fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &res_create);

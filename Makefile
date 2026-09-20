@@ -17,7 +17,7 @@ CFLAGS += -std=c99 -Wall -Wsign-compare -Wpointer-arith -Wcast-qual \
 
 # Dependencies that all gtest based unittests should have.
 UNITTEST_LIBS := -lcap -lgtest -lgmock
-UNITTEST_DEPS := gbm_unittest.o testrunner.o gbm.o dri.o drv_array_helpers.o drv_helpers.o drv.o backend_mock.o virtgpu_cross_domain.o virtgpu_virgl.o virtgpu.o msm.o vc4.o amdgpu.o i915.o mediatek.o dumb_driver.o
+UNITTEST_DEPS := gbm_unittest.o virtgpu_virgl_unittest.o testrunner.o gbm.o gbm_helpers.o dri.o drv_array_helpers.o drv_helpers.o drv.o backend_mock.o virtgpu_cross_domain.o virtgpu_virgl.o virtgpu.o msm.o vc4.o amdgpu.o i915.o mediatek.o dumb_driver.o
 
 ifdef DRV_AMDGPU
 	CFLAGS += $(shell $(PKG_CONFIG) --cflags libdrm_amdgpu)
