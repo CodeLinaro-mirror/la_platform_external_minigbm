@@ -217,3 +217,31 @@ TEST(virtgpu_virgl_unit_test, emulated_nv12_aligned_size_too_large)
 		drv_bo_destroy(bo);
 	drv_destroy(drv);
 }
+
+TEST(virtgpu_virgl_unit_test, use_flags_bind_mapping)
+{
+	struct driver *drv = create_virgl_driver();
+	ASSERT_TRUE(drv);
+
+	/* Test protected buffer bind flags (0xfu << 28) */
+	struct bo *bo_protected = drv_bo_create(drv, 64, 64, DRM_FORMAT_NV12,
+						BO_USE_TEXTURE | BO_USE_PROTECTED);
+	ASSERT_TRUE(bo_protected);
+	EXPECT_EQ(last_resource_create.bind & VIRGL_BIND_MINIGBM_PROTECTED,
+		  VIRGL_BIND_MINIGBM_PROTECTED);
+	drv_bo_destroy(bo_protected);
+
+	/* Test software read/write flags including VIRGL_BIND_MINIGBM_SW_WRITE_RARELY (1u << 31) */
+	struct bo *bo_sw = drv_bo_create(drv, 64, 64, DRM_FORMAT_NV12,
+					 BO_USE_TEXTURE | BO_USE_SW_READ_RARELY |
+					 BO_USE_SW_WRITE_RARELY);
+	ASSERT_TRUE(bo_sw);
+	EXPECT_EQ(last_resource_create.bind & VIRGL_BIND_MINIGBM_SW_WRITE_RARELY,
+		  VIRGL_BIND_MINIGBM_SW_WRITE_RARELY);
+	EXPECT_EQ(last_resource_create.bind & VIRGL_BIND_MINIGBM_SW_READ_RARELY,
+		  VIRGL_BIND_MINIGBM_SW_READ_RARELY);
+	drv_bo_destroy(bo_sw);
+
+	drv_destroy(drv);
+}
+

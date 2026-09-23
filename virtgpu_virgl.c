@@ -141,7 +141,7 @@ static bool virgl_bitmask_supports_format(struct virgl_supported_format_mask *su
 
 	uint32_t bitmask_index = virgl_format / 32;
 	uint32_t bit_index = virgl_format % 32;
-	return supported->bitmask[bitmask_index] & (1 << bit_index);
+	return supported->bitmask[bitmask_index] & (1u << bit_index);
 }
 
 // The metadata generated here for emulated buffers is slightly different than the metadata
