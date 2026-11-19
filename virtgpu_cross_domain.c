@@ -240,7 +240,7 @@ static int cross_domain_init(struct driver *drv)
 	struct drm_virtgpu_context_set_param ctx_set_params[2] = { { 0 } };
 
 	struct CrossDomainInit cmd_init;
-	struct CrossDomainCapabilities cross_domain_caps;
+	struct CrossDomainCapabilities cross_domain_caps = { 0 };
 
 	memset(&cmd_init, 0, sizeof(cmd_init));
 	if (!params[param_context_init].value)
@@ -310,7 +310,9 @@ static int cross_domain_init(struct driver *drv)
 
 	// Create a shared ring buffer to read metadata queries.
 	drm_rc_blob.size = PAGE_SIZE;
-	drm_rc_blob.blob_mem = VIRTGPU_BLOB_MEM_GUEST;
+	drm_rc_blob.blob_mem = cross_domain_caps.use_shareable_ring_blob
+				   ? VIRTGPU_BLOB_MEM_HOST3D
+				   : VIRTGPU_BLOB_MEM_GUEST;
 	drm_rc_blob.blob_flags = VIRTGPU_BLOB_FLAG_USE_MAPPABLE;
 
 	ret = drmIoctl(drv->fd, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE_BLOB, &drm_rc_blob);
